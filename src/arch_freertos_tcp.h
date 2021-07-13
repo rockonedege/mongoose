@@ -1,30 +1,32 @@
 #pragma once
 
-#if MG_ARCH == MG_ARCH_FREERTOS
+#if MG_ARCH == MG_ARCH_FREERTOS_TCP
 
 #include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <time.h>
 
+#if MG_ENABLE_FS
+#include <sys/stat.h>
+#endif
+
 #include <FreeRTOS.h>
-
-#include <task.h>
-
 #include <FreeRTOS_IP.h>
 #include <FreeRTOS_Sockets.h>
-#include <stdbool.h>
+#include <task.h>
 
 #define MG_INT64_FMT "%lld"
 #define MG_DIRSEP '/'
+
+// Why FreeRTOS-TCP did not implement a clean BSD API, but its own thing
+// with FreeRTOS_ prefix, is beyond me
 #define IPPROTO_TCP FREERTOS_IPPROTO_TCP
 #define IPPROTO_UDP FREERTOS_IPPROTO_UDP
 #define AF_INET FREERTOS_AF_INET
@@ -35,9 +37,7 @@
 #define SOL_SOCKET 0
 #define SO_REUSEADDR 0
 #define sockaddr_in freertos_sockaddr
-struct sockaddr {
-  uint8_t sa_len, sa_family;
-};
+#define sockaddr freertos_sockaddr
 #define accept(a, b, c) FreeRTOS_accept((a), (b), (c))
 #define connect(a, b, c) FreeRTOS_connect((a), (b), (c))
 #define bind(a, b, c) FreeRTOS_bind((a), (b), (c))
@@ -52,27 +52,38 @@ struct sockaddr {
 #define closesocket(x) FreeRTOS_closesocket(x)
 #define gethostbyname(x) FreeRTOS_gethostbyname(x)
 
-#include <ff_stdio.h>
-
-#undef FILE
-#define FILE FF_FILE
-//#define SEEK_SET FF_SEEK_SET
-//#define SEEK_END FF_SEEK_END
-#define stat(a, b) ff_stat((a), (b))
-#define fopen(a, b) ff_fopen((a), (b))
-#define fclose(a) ff_fclose(a)
-#define fread(a, b, c, d) ff_fread((a), (b), (c), (d))
-#define fwrite(a, b, c, d) ff_fwrite((a), (b), (c), (d))
-#define vfprintf ff_vfprintf
-#define fprintf ff_fprintf
-#define remove(a) ff_remove(a)
-#define rename(a, b) ff_rename((a), (b), 1)
-
-static inline int ff_vfprintf(FF_FILE *fp, const char *fmt, va_list ap) {
-  char *buf = NULL;
-  int n = mg_vasprintf(&buf, 0, fmt, ap);
-  if (buf != NULL) ff_fwrite(buf, 1, n, fp), free(buf);
-  return n;
+// Re-route calloc/free to the FreeRTOS's functions, don't use stdlib
+static inline void *mg_calloc(int cnt, size_t size) {
+  void *p = pvPortMalloc(cnt * size);
+  if (p != NULL) memset(p, 0, size);
+  return p;
 }
+#define calloc(a, b) mg_calloc((a), (b))
+#define free(a) vPortFree(a)
+#define malloc(a) pvPortMalloc(a)
 
+#define gmtime_r(a, b) gmtime(a)
+
+#if !defined(__GNUC__)
+// copied from GCC on ARM; for some reason useconds are signed
+typedef long suseconds_t;
+struct timeval {
+  time_t tv_sec;
+  suseconds_t tv_usec;
+};
 #endif
+
+#ifndef EINPROGRESS
+#define EINPROGRESS pdFREERTOS_ERRNO_EINPROGRESS
+#endif
+#ifndef EWOULDBLOCK
+#define EWOULDBLOCK pdFREERTOS_ERRNO_EWOULDBLOCK
+#endif
+#ifndef EAGAIN
+#define EAGAIN pdFREERTOS_ERRNO_EAGAIN
+#endif
+#ifndef EINTR
+#define EINTR pdFREERTOS_ERRNO_EINTR
+#endif
+
+#endif  // MG_ARCH == MG_ARCH_FREERTOS_TCP

@@ -33,9 +33,9 @@ struct mg_mqtt_opts {
 };
 
 struct mg_mqtt_message {
-  struct mg_str topic;    // Parsed topic
-  struct mg_str data;     // Parsed message
-  struct mg_str dgram;    // Whole MQTT datagram, including headers
+  struct mg_str topic;  // Parsed topic
+  struct mg_str data;   // Parsed message
+  struct mg_str dgram;  // Whole MQTT datagram, including headers
   uint16_t id;  // Set for PUBACK, PUBREC, PUBREL, PUBCOMP, SUBACK, PUBLISH
   uint8_t cmd;  // MQTT command, one of MQTT_CMD_*
   uint8_t qos;  // Quality of service
@@ -47,16 +47,16 @@ struct mg_connection *mg_mqtt_connect(struct mg_mgr *, const char *url,
                                       mg_event_handler_t fn, void *fn_data);
 struct mg_connection *mg_mqtt_listen(struct mg_mgr *mgr, const char *url,
                                      mg_event_handler_t fn, void *fn_data);
-void mg_mqtt_pub(struct mg_connection *, struct mg_str *topic,
-                 struct mg_str *data);
-void mg_mqtt_sub(struct mg_connection *, struct mg_str *topic);
+void mg_mqtt_pub(struct mg_connection *c, struct mg_str *topic,
+                 struct mg_str *data, int qos, bool retain);
+void mg_mqtt_sub(struct mg_connection *, struct mg_str *topic, int qos);
 int mg_mqtt_parse(const uint8_t *buf, size_t len, struct mg_mqtt_message *m);
 void mg_mqtt_send_header(struct mg_connection *, uint8_t cmd, uint8_t flags,
                          uint32_t len);
-int mg_mqtt_next_sub(struct mg_mqtt_message *msg, struct mg_str *topic,
-                     uint8_t *qos, int pos);
-int mg_mqtt_next_unsub(struct mg_mqtt_message *msg, struct mg_str *topic,
-                       int pos);
+size_t mg_mqtt_next_sub(struct mg_mqtt_message *msg, struct mg_str *topic,
+                        uint8_t *qos, size_t pos);
+size_t mg_mqtt_next_unsub(struct mg_mqtt_message *msg, struct mg_str *topic,
+                          size_t pos);
 void mg_mqtt_ping(struct mg_connection *);
 void mg_mqtt_pong(struct mg_connection *);
 void mg_mqtt_disconnect(struct mg_connection *);

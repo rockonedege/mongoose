@@ -3,9 +3,6 @@
 #include "arch.h"
 #include "config.h"
 
-#if MG_ENABLE_MGOS
-#include <common/cs_dbg.h>
-#else
 #if MG_ENABLE_LOG
 #define LOG(level, args)                                                   \
   do {                                                                     \
@@ -15,8 +12,8 @@ enum { LL_NONE, LL_ERROR, LL_INFO, LL_DEBUG, LL_VERBOSE_DEBUG };
 bool mg_log_prefix(int ll, const char *file, int line, const char *fname);
 void mg_log(const char *fmt, ...) PRINTF_LIKE(1, 2);
 void mg_log_set(const char *spec);
-void mg_log_set_callback(void (*fn)(const void *, int, void *), void *param);
+void mg_log_set_callback(void (*fn)(const void *, size_t, void *), void *param);
 #else
-#define LOG(level, args)
-#endif
+#define LOG(level, args) (void) 0
+#define mg_log_set(x) (void) (x)
 #endif

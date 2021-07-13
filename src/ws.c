@@ -54,7 +54,7 @@ static size_t ws_process(uint8_t *buf, size_t len, struct ws_msg *msg) {
     } else if (len >= 10 + mask_len) {
       msg->header_len = 10 + mask_len;
       msg->data_len =
-          (int) (((uint64_t) mg_ntohl(*(uint32_t *) &buf[2])) << 32) +
+          (size_t)(((uint64_t) mg_ntohl(*(uint32_t *) &buf[2])) << 32) +
           mg_ntohl(*(uint32_t *) &buf[6]);
     }
   }
@@ -124,7 +124,7 @@ static void mg_ws_cb(struct mg_connection *c, int ev, void *ev_data,
           c->is_websocket = 1;
           mg_call(c, MG_EV_WS_OPEN, &hm);
         }
-        mg_iobuf_delete(&c->recv, n);
+        mg_iobuf_delete(&c->recv, (size_t) n);
       } else {
         return;  // A request is not yet received
       }
@@ -134,6 +134,9 @@ static void mg_ws_cb(struct mg_connection *c, int ev, void *ev_data,
       char *s = (char *) c->recv.buf + msg.header_len;
       struct mg_ws_message m = {{s, msg.data_len}, msg.flags};
       switch (msg.flags & WEBSOCKET_FLAGS_MASK_OP) {
+        case WEBSOCKET_OP_CONTINUE:
+          mg_call(c, MG_EV_WS_CTL, &m);
+          break;
         case WEBSOCKET_OP_PING:
           LOG(LL_DEBUG, ("%s", "WS PONG"));
           mg_ws_send(c, s, msg.data_len, WEBSOCKET_OP_PONG);
@@ -142,15 +145,19 @@ static void mg_ws_cb(struct mg_connection *c, int ev, void *ev_data,
         case WEBSOCKET_OP_PONG:
           mg_call(c, MG_EV_WS_CTL, &m);
           break;
+        case WEBSOCKET_OP_TEXT:
+        case WEBSOCKET_OP_BINARY:
+          mg_call(c, MG_EV_WS_MSG, &m);
+          break;
         case WEBSOCKET_OP_CLOSE:
           LOG(LL_ERROR, ("%lu Got WS CLOSE", c->id));
           mg_call(c, MG_EV_WS_CTL, &m);
           c->is_closing = 1;
-          return;
-        default: {
-          mg_call(c, MG_EV_WS_MSG, &m);
           break;
-        }
+        default:
+          // Per RFC6455, close conn when an unknown op is recvd
+          mg_error(c, "unknown WS op %d", msg.flags & WEBSOCKET_FLAGS_MASK_OP);
+          break;
       }
       mg_iobuf_delete(&c->recv, msg.header_len + msg.data_len);
     }
@@ -188,7 +195,7 @@ struct mg_connection *mg_ws_connect(struct mg_mgr *mgr, const char *url,
                      "Sec-WebSocket-Key: %s\r\n"
                      "\r\n",
                      mg_url_uri(url), (int) host.len, host.ptr, n1, buf1, key);
-    mg_send(c, buf2, n2);
+    mg_send(c, buf2, n2 > 0 ? (size_t) n2 : 0);
     if (buf1 != mem1) free(buf1);
     if (buf2 != mem2) free(buf2);
     c->pfn = mg_ws_cb;

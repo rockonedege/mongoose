@@ -1,4 +1,5 @@
-#include "config.h"
+#include "config.h"  // Must go first - important for test++
+
 #include "util.h"
 
 #if MG_ENABLE_FS
@@ -24,7 +25,7 @@ FILE *mg_fopen(const char *path, const char *mode) {
 }
 
 int64_t mg_file_size(const char *path) {
-#if MG_ARCH == MG_ARCH_FREERTOS
+#if MG_ARCH == MG_ARCH_FREERTOS_TCP && defined(MG_ENABLE_FF)
   struct FF_STAT st;
   return ff_stat(path, &st) == 0 ? st.st_size : 0;
 #else
@@ -38,7 +39,7 @@ char *mg_file_read(const char *path, size_t *sizep) {
   char *data = NULL;
   size_t size = (size_t) mg_file_size(path);
   if ((fp = mg_fopen(path, "rb")) != NULL) {
-    data = (char *) malloc(size + 1);
+    data = (char *) calloc(1, size + 1);
     if (data != NULL) {
       if (fread(data, 1, size, fp) != size) {
         free(data);
@@ -75,16 +76,16 @@ bool mg_file_write(const char *path, const void *buf, size_t len) {
 bool mg_file_printf(const char *path, const char *fmt, ...) {
   char tmp[256], *buf = tmp;
   bool result;
-  size_t len;
+  int len;
   va_list ap;
   va_start(ap, fmt);
   len = mg_vasprintf(&buf, sizeof(tmp), fmt, ap);
   va_end(ap);
-  result = mg_file_write(path, buf, len);
+  result = mg_file_write(path, buf, len > 0 ? (size_t) len : 0);
   if (buf != tmp) free(buf);
   return result;
 }
-#endif
+#endif  // MG_ENABLE_FS
 
 void mg_random(void *buf, size_t len) {
   bool done = false;
@@ -98,12 +99,14 @@ void mg_random(void *buf, size_t len) {
   if (!done) {
     // Fallback to a pseudo random gen
     size_t i;
-    for (i = 0; i < len; i++) ((unsigned char *) buf)[i] = rand() % 0xff;
+    for (i = 0; i < len; i++) {
+      ((unsigned char *) buf)[i] = (unsigned char) (rand() % 0xff);
+    }
   }
 }
 
-bool mg_globmatch(const char *s1, int n1, const char *s2, int n2) {
-  int i = 0, j = 0, ni = 0, nj = 0;
+bool mg_globmatch(const char *s1, size_t n1, const char *s2, size_t n2) {
+  size_t i = 0, j = 0, ni = 0, nj = 0;
   while (i < n1 || j < n2) {
     if (i < n1 && j < n2 && (s1[i] == '?' || s2[j] == s1[i])) {
       i++, j++;
@@ -118,21 +121,22 @@ bool mg_globmatch(const char *s1, int n1, const char *s2, int n2) {
   return true;
 }
 
-static int mg_nextcommaentry(const char *s, int slen, int ofs, int *koff,
-                             int *klen, int *voff, int *vlen) {
-  int kvlen, kl;
-  for (kvlen = 0; ofs + kvlen < slen && s[ofs + kvlen] != ',';) kvlen++;
+static size_t mg_nce(const char *s, size_t n, size_t ofs, size_t *koff,
+                     size_t *klen, size_t *voff, size_t *vlen) {
+  size_t kvlen, kl;
+  for (kvlen = 0; ofs + kvlen < n && s[ofs + kvlen] != ',';) kvlen++;
   for (kl = 0; kl < kvlen && s[ofs + kl] != '=';) kl++;
   if (koff != NULL) *koff = ofs;
   if (klen != NULL) *klen = kl;
   if (voff != NULL) *voff = kl < kvlen ? ofs + kl + 1 : 0;
   if (vlen != NULL) *vlen = kl < kvlen ? kvlen - kl - 1 : 0;
-  return ofs >= slen ? slen : ofs + kvlen + 1;
+  ofs += kvlen + 1;
+  return ofs > n ? n : ofs;
 }
 
 bool mg_next_comma_entry(struct mg_str *s, struct mg_str *k, struct mg_str *v) {
-  int koff, klen, voff, vlen;
-  int off = mg_nextcommaentry(s->ptr, s->len, 0, &koff, &klen, &voff, &vlen);
+  size_t koff = 0, klen = 0, voff = 0, vlen = 0;
+  size_t off = mg_nce(s->ptr, s->len, 0, &koff, &klen, &voff, &vlen);
   if (k != NULL) *k = mg_str_n(s->ptr + koff, klen);
   if (v != NULL) *v = mg_str_n(s->ptr + voff, vlen);
   *s = mg_str_n(s->ptr + off, s->len - off);
@@ -142,45 +146,47 @@ bool mg_next_comma_entry(struct mg_str *s, struct mg_str *k, struct mg_str *v) {
 uint32_t mg_ntohl(uint32_t net) {
   uint8_t data[4] = {0, 0, 0, 0};
   memcpy(&data, &net, sizeof(data));
-  return ((uint32_t) data[3] << 0) | ((uint32_t) data[2] << 8) |
-         ((uint32_t) data[1] << 16) | ((uint32_t) data[0] << 24);
+  return (((uint32_t) data[3]) << 0) | (((uint32_t) data[2]) << 8) |
+         (((uint32_t) data[1]) << 16) | (((uint32_t) data[0]) << 24);
 }
 
 uint16_t mg_ntohs(uint16_t net) {
   uint8_t data[2] = {0, 0};
   memcpy(&data, &net, sizeof(data));
-  return ((uint16_t) data[1] << 0) | ((uint32_t) data[0] << 8);
+  return (uint16_t)((uint16_t) data[1] | (((uint16_t) data[0]) << 8));
 }
 
 char *mg_hexdump(const void *buf, size_t len) {
   const unsigned char *p = (const unsigned char *) buf;
   size_t i, idx, n = 0, ofs = 0, dlen = len * 5 + 100;
-  char ascii[17] = "", *dst = (char *) malloc(dlen);
+  char ascii[17] = "", *dst = (char *) calloc(1, dlen);
   if (dst == NULL) return dst;
   for (i = 0; i < len; i++) {
     idx = i % 16;
     if (idx == 0) {
-      if (i > 0 && dlen > n) n += snprintf(dst + n, dlen - n, "  %s\n", ascii);
-      if (dlen > n) n += snprintf(dst + n, dlen - n, "%04x ", (int) (i + ofs));
+      if (i > 0 && dlen > n)
+        n += (size_t) snprintf(dst + n, dlen - n, "  %s\n", ascii);
+      if (dlen > n)
+        n += (size_t) snprintf(dst + n, dlen - n, "%04x ", (int) (i + ofs));
     }
     if (dlen < n) break;
-    n += snprintf(dst + n, dlen - n, " %02x", p[i]);
-    ascii[idx] = p[i] < 0x20 || p[i] > 0x7e ? '.' : p[i];
+    n += (size_t) snprintf(dst + n, dlen - n, " %02x", p[i]);
+    ascii[idx] = (char) (p[i] < 0x20 || p[i] > 0x7e ? '.' : p[i]);
     ascii[idx + 1] = '\0';
   }
   while (i++ % 16) {
-    if (n < dlen) n += snprintf(dst + n, dlen - n, "%s", "   ");
+    if (n < dlen) n += (size_t) snprintf(dst + n, dlen - n, "%s", "   ");
   }
-  if (n < dlen) n += snprintf(dst + n, dlen - n, "  %s\n", ascii);
+  if (n < dlen) n += (size_t) snprintf(dst + n, dlen - n, "  %s\n", ascii);
   if (n > dlen - 1) n = dlen - 1;
   dst[n] = '\0';
   return dst;
 }
 
-char *mg_hex(const void *buf, int len, char *to) {
+char *mg_hex(const void *buf, size_t len, char *to) {
   const unsigned char *p = (const unsigned char *) buf;
   static const char *hex = "0123456789abcdef";
-  int i = 0;
+  size_t i = 0;
   for (; len--; p++) {
     to[i++] = hex[p[0] >> 4];
     to[i++] = hex[p[0] & 0x0f];
@@ -189,19 +195,20 @@ char *mg_hex(const void *buf, int len, char *to) {
   return to;
 }
 
-unsigned long mg_unhexn(const char *s, int len) {
+static unsigned char mg_unhex_nimble(unsigned char c) {
+  return (c >= '0' && c <= '9')   ? (unsigned char) (c - '0')
+         : (c >= 'A' && c <= 'F') ? (unsigned char) (c - '7')
+                                  : (unsigned char) (c - 'W');
+}
+
+unsigned long mg_unhexn(const char *s, size_t len) {
   unsigned long i = 0, v = 0;
-  for (i = 0; i < (unsigned long) len; i++) {
-    int c = s[i];
-    if (i > 0) v <<= 4;
-    v |= (c >= '0' && c <= '9') ? c - '0'
-                                : (c >= 'A' && c <= 'F') ? c - '7' : c - 'W';
-  }
+  for (i = 0; i < len; i++) v <<= 4, v |= mg_unhex_nimble(((uint8_t *) s)[i]);
   return v;
 }
 
-void mg_unhex(const char *buf, int len, unsigned char *to) {
-  int i;
+void mg_unhex(const char *buf, size_t len, unsigned char *to) {
+  size_t i;
   for (i = 0; i < len; i += 2) {
     to[i >> 1] = (unsigned char) mg_unhexn(&buf[i], 2);
   }
@@ -225,7 +232,7 @@ int mg_vasprintf(char **buf, size_t size, const char *fmt, va_list ap) {
       free(*buf);
       if (size == 0) size = 5;
       size *= 2;
-      if ((*buf = (char *) malloc(size)) == NULL) {
+      if ((*buf = (char *) calloc(1, size)) == NULL) {
         len = -1;
         break;
       }
@@ -239,11 +246,11 @@ int mg_vasprintf(char **buf, size_t size, const char *fmt, va_list ap) {
     // LCOV_EXCL_STOP
   } else if (len >= (int) size) {
     /// Standard-compliant code path. Allocate a buffer that is large enough
-    if ((*buf = (char *) malloc(len + 1)) == NULL) {
+    if ((*buf = (char *) calloc(1, (size_t) len + 1)) == NULL) {
       len = -1;  // LCOV_EXCL_LINE
     } else {     // LCOV_EXCL_LINE
       va_copy(ap_copy, ap);
-      len = vsnprintf(*buf, len + 1, fmt, ap_copy);
+      len = vsnprintf(*buf, (size_t) len + 1, fmt, ap_copy);
       va_end(ap_copy);
     }
   }
@@ -302,6 +309,8 @@ double mg_time(void) {
                     ((int64_t) ftime.dwHighDateTime << 32)) /
                    10000000.0) -
          11644473600;
+#elif MG_ARCH == MG_ARCH_FREERTOS_TCP
+  return mg_millis() / 1000.0;
 #else
   struct timeval tv;
   if (gettimeofday(&tv, NULL /* tz */) != 0) return 0;
@@ -314,8 +323,10 @@ void mg_usleep(unsigned long usecs) {
   Sleep(usecs / 1000);
 #elif MG_ARCH == MG_ARCH_ESP8266
   ets_delay_us(usecs);
+#elif MG_ARCH == MG_ARCH_FREERTOS_TCP || MG_ARCH == MG_ARCH_FREERTOS_LWIP
+  vTaskDelay(pdMS_TO_TICKS(usecs / 1000));
 #else
-  usleep(usecs);
+  usleep((useconds_t) usecs);
 #endif
 }
 
@@ -325,13 +336,13 @@ unsigned long mg_millis(void) {
 #elif MG_ARCH == MG_ARCH_ESP32
   return esp_timer_get_time() / 1000;
 #elif MG_ARCH == MG_ARCH_ESP8266
-  // return system_get_time() / 1000;
   return xTaskGetTickCount() * portTICK_PERIOD_MS;
-#elif MG_ARCH == MG_ARCH_FREERTOS
+#elif MG_ARCH == MG_ARCH_FREERTOS_TCP || MG_ARCH == MG_ARCH_FREERTOS_LWIP
   return xTaskGetTickCount() * portTICK_PERIOD_MS;
 #else
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
-  return (unsigned long) ((uint64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+  return (unsigned long) ((uint64_t) ts.tv_sec * 1000 +
+                          (uint64_t) ts.tv_nsec / 1000000);
 #endif
 }

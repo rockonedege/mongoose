@@ -13,17 +13,16 @@ robust, and easy.
 
 ## Features
 
-* Cross-platform: works on Linux/UNIX, MacOS, QNX, eCos, Windows, Android,
-  iPhone, FreeRTOS, etc.
-* Supported hardware platforms: TI CC3200, TI MSP432, NRF52, STM32, PIC32, ESP8266, ESP32 and more
+* Works on Linux/UNIX, MacOS, Windows, QNX, eCos, Android and other
+* Works on embedded hardware: STM32, ESP32, NXP, Xilinx, and other
 * Built-in protocols:
    - plain TCP, plain UDP, SSL/TLS (over TCP, one-way or two-way)
    - HTTP client, HTTP server
    - WebSocket client, WebSocket server
-   - MQTT client
+   - MQTT client, MQTT server
    - DNS client, async DNS resolver
 * Single-threaded, asynchronous, non-blocking core with simple event-based API
-* Native support for [LWIP embedded TCP/IP stack](https://en.wikipedia.org/wiki/LwIP)
+* Support for LWIP and FreeRTOS-Plus-TCP stacks
 * Tiny static and run-time footprint
 * Source code is both ISO C and ISO C++ compliant
 * Very easy to integrate: just copy
@@ -90,7 +89,7 @@ Each connection has a send and receive buffer:
 - `struct mg_connection::recv` - data received from a peer
 
 When data arrives, Mongoose appends received data to the `recv` and triggers an
-`MG_EV_RECV` event. The user may send data back by calling one of the output
+`MG_EV_READ` event. The user may send data back by calling one of the output
 functions, like `mg_send()` or `mg_printf()`. Output functions append data to
 the `send` buffer.  When Mongoose successfully writes data to the socket, it
 discards data from struct `mg_connection::send` and sends an `MG_EV_SEND`
@@ -114,9 +113,9 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
 
 - `struct mg_connection *c` - a connection that received an event
 - `int ev` - an event number, defined in mongoose.h. For example, when data
-  arrives on an inbound connection, ev would be `MG_EV_RECV`
+  arrives on an inbound connection, ev would be `MG_EV_READ`
 - `void *ev_data` - points to the event-specific data, and it has a different
-  meaning for different events. For example, for an `MG_EV_RECV` event,
+  meaning for different events. For example, for an `MG_EV_READ` event,
   `ev_data`
   is an `int *` pointing to the number of bytes received from a remote
   peer and saved into the `c->recv` IO buffer. The exact meaning of `ev_data` is
@@ -193,41 +192,62 @@ Mongoose source code ships in two files:
 - [mongoose.c](https://github.com/cesanta/mongoose/blob/master/mongoose.c) - implementation
 
 Therefore to integrate Mongoose into an application, simply copy these two
-files to the application's source tree.
+files to the application's source tree. The `mongoose.c` and `mongoose.h` files
+are, actually, an amalgamation - a non-amalgamated sources can be found at
+https://github.com/cesanta/mongoose/tree/master/src
 
-The `mongoose.c` and `mongoose.h` files are, actually, an amalgamation -
-a non-amalgamated sources can be found at https://github.com/cesanta/mongoose/tree/master/src
-
-Mongoose source code uses a bunch of build constants defined at
-https://github.com/cesanta/mongoose/blob/master/src/config.h, together with
-their default values.
-
-In order to change the constant during build time, use the `-D
-<PREPROCESSOR_FLAG>` compiler option. For example, to disable both MQTT,
-compile the application `my_app.c` like this (assumed UNIX system):
+Mongoose have two types of build constants (preprocessor definitions) that
+affect the build: a target architecture, and tunables. In order to set the
+option during build time, use the `-D OPTION` compiler flag:
 
 ```sh
-$ cc my_app.c mongoose.c -D MG_MQTT_ENABLE=0
+$ cc app0.c mongoose.c                                        # Use defaults!
+$ cc app1.c mongoose.c -D MG_ENABLE_IPV6=1                    # Build with IPv6 enabled
+$ cc app2.c mongoose.c -D MG_ARCH=MG_ARCH_FREERTOS_LWIP       # Set architecture
+$ cc app3.c mongoose.c -D MG_ENABLE_FS=0 -D MG_ENABLE_LOG=0   # Multiple options
 ```
+
+The list of supported
+architectures is defined in the
+[arch.h](https://github.com/cesanta/mongoose/blob/master/src/arch.h) header
+file. Normally, there is no need to explicitly specify the architecture.  The
+architecture is guessed during the build, so setting it is not usually required.
+
+| Name | Description |
+| ---- | ----------- |
+|MG_ARCH_UNIX | All UNIX-like systems like Linux, MacOS, FreeBSD, etc |
+|MG_ARCH_WIN32 | Windows systems |
+|MG_ARCH_ESP32 | Espressif's ESP32 |
+|MG_ARCH_ESP8266 | Espressif's ESP8266 |
+|MG_ARCH_FREERTOS_LWIP | All systems with FreeRTOS kernel and LwIP IP stack |
+|MG_ARCH_FREERTOS_TCP | All systems with FreeRTOS kernel and FreeRTOS-Plus-TCP IP stack |
+|MG_ARCH_CUSTOM | A custom architecture, discussed in the next section |
+
+
+The other class of build constants is defined in
+[src/config.h](https://github.com/cesanta/mongoose/blob/master/src/config.h)
+together with their default values. They are tunables that include/exclude
+a certain functionality or change relevant parameters.
+
 
 Here is a list of build constants and their default values:
 
 | Name | Default | Description |
 | ---- | ------- | ----------- |
-|`MG_ENABLE_LWIP` | 0 | Use LWIP low-level API instead of BSD sockets |
-|`MG_ENABLE_SOCKET` | 1 | Use BSD socket low-level API |
-|`MG_ENABLE_MBEDTLS` | 0 | Enable Mbed TLS library |
-|`MG_ENABLE_OPENSSL` | 0 | Enable OpenSSL library |
-|`MG_ENABLE_FS` | 1 | Enable API that use filesystem, like `mg_http_send_file()` |
-|`MG_ENABLE_IPV6` | 0 | Enable IPv6 |
-|`MG_ENABLE_LOG` | 1 | Enable `LOG()` macro |
-|`MG_ENABLE_MD5` | 0 | Use native MD5 implementation |
-|`MG_ENABLE_DIRECTORY_LISTING` | 0 | Enable directory listing for HTTP server |
-|`MG_ENABLE_SOCKETPAIR` | 0 | Enable `mg_socketpair()` for multi-threading |
-|`MG_ENABLE_SSI` | 0 | Enable serving SSI files by `mg_http_serve_dir()` |
-|`MG_IO_SIZE` | 512 | Granularity of the send/recv IO buffer growth |
-|`MG_MAX_RECV_BUF_SIZE` | (3 * 1024 * 1024) | Maximum recv buffer size |
-|`MG_MAX_HTTP_HEADERS` | 40 | Maximum number of HTTP headers |
+|MG_ENABLE_SOCKET | 1 | Use BSD socket low-level API |
+|MG_ENABLE_MBEDTLS | 0 | Enable Mbed TLS library |
+|MG_ENABLE_OPENSSL | 0 | Enable OpenSSL library |
+|MG_ENABLE_FS | 1 | Enable API that use filesystem, like `mg_http_send_file()` |
+|MG_ENABLE_IPV6 | 0 | Enable IPv6 |
+|MG_ENABLE_LOG | 1 | Enable `LOG()` macro |
+|MG_ENABLE_MD5 | 0 | Use native MD5 implementation |
+|MG_ENABLE_DIRECTORY_LISTING | 0 | Enable directory listing for HTTP server |
+|MG_ENABLE_SOCKETPAIR | 0 | Enable `mg_socketpair()` for multi-threading |
+|MG_ENABLE_SSI | 0 | Enable serving SSI files by `mg_http_serve_dir()` |
+|MG_IO_SIZE | 512 | Granularity of the send/recv IO buffer growth |
+|MG_MAX_RECV_BUF_SIZE | (3 * 1024 * 1024) | Maximum recv buffer size |
+|MG_MAX_HTTP_HEADERS | 40 | Maximum number of HTTP headers |
+
 
 NOTE: `MG_IO_SIZE` controls the maximum UDP message size, see
 https://github.com/cesanta/mongoose/issues/907 for details. If application
@@ -235,24 +255,26 @@ uses large UDP messages, increase the `MG_IO_SIZE` limit accordingly.
 
 ## Custom build
 
-It is possible to use Mongoose on an architecture that is not yet supported
-by the current codebase. In order to do so, follow these steps:
+A custom build should be used for cases which is not covered by the
+existing architecture options. For example, an embedded architecture that
+uses some proprietary RTOS and network stack. In order to build on such
+systems, follow the guideline outlined below:
 
-1. Create a file called `mongoose_custom.h`, with defines and includes that
+1. Add `-DMG_ARCH=MG_ARCH_CUSTOM` to your build flags.
+
+2. Create a file called `mongoose_custom.h`, with defines and includes that
 are relevant to your platform. Mongoose uses `bool` type, `MG_DIRSEP` define,
 and optionally other structures like `DIR *` depending on the functionality
 you have enabled - see previous section. Below is an example:
 
 ```c
-#include <dirent.h>             // For DIR *
 #include <stdbool.h>            // For bool
-#include <sys/time.h>           // For gettimeofday()
-#include <unistd.h>             // For usleep()
+#include <stdarg.h>
+
 #define MG_DIRSEP '/'
+#define MG_INT64_FMT "%lld"
 #define MG_ENABLE_SOCKET 0      // Disable BSD socket API, implement your own
 ```
-
-2. Add `-DMG_ARCH=MG_ARCH_CUSTOM` to your build flags.
 
 3. This step is optional. If you have disabled BSD socket API, your build is
 going to fail due to several undefined symbols. Create `mongoose_custom.c`
@@ -320,7 +342,7 @@ This example is a simple TCP echo server that listens on port 1234:
 static const char *s_listening_address = "tcp://0.0.0.0:1234";
 
 static void cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
-  if (ev == MG_EV_RECV) {
+  if (ev == MG_EV_READ) {
     mg_send(c, c->recv.buf, c->recv.len);     // Echo received data back
     mg_iobuf_delete(&c->recv, c->recv.len);   // And discard it
   }
@@ -363,13 +385,14 @@ struct mg_connection {
   struct mg_mgr *mgr;          // Our container
   struct mg_addr peer;         // Remote peer address
   void *fd;                    // Connected socket, or LWIP data
+  unsigned long id;            // Auto-incrementing unique connection ID
   struct mg_iobuf recv;        // Incoming data
   struct mg_iobuf send;        // Outgoing data
   mg_event_handler_t fn;       // User-specified event handler function
   void *fn_data;               // User-specified function parameter
   mg_event_handler_t pfn;      // Protocol-specific handler function
   void *pfn_data;              // Protocol-specific function parameter
-  char label[32];              // Arbitrary label
+  char label[50];              // Arbitrary label
   void *tls;                   // TLS specific data
   unsigned is_listening : 1;   // Listening connection
   unsigned is_client : 1;      // Outbound (client) connection
@@ -408,7 +431,7 @@ void mg_mgr_poll(struct mg_mgr *mgr, int ms);
 ```
 
 Perform a single poll iteration. For each connection in the `mgr->conns` list,
-- See if there is incoming data. If it is, read it into the `c->recv` buffer, send `MG_EV_RECV` event
+- See if there is incoming data. If it is, read it into the `c->recv` buffer, send `MG_EV_READ` event
 - See if there is data in the `c->send` buffer, and write it, send `MG_EV_WRITE` event
 - If a connection is listening, accept an incoming connection if any, and send `MG_EV_ACCEPT` event to it
 - Send `MG_EV_POLL` event
@@ -731,7 +754,7 @@ parameter.
 - `fmt` - a format string for the HTTP body, in a printf semantics
 
 
-### mg\_http\_header()
+### mg\_http\_get\_header()
 
 ```c
 struct mg_str *mg_http_get_header(struct mg_http_message *, const char *name);
@@ -954,36 +977,34 @@ Create client MQTT connection.
 
 ```c
 void mg_mqtt_pub(struct mg_connection *, struct mg_str *topic,
-                 struct mg_str *data);
+                 struct mg_str *data, int qos, bool retain);
 ```
 
-Publish message `data` to the topic `topic`.
-
+Publish message `data` to the topic `topic` with given QoS and retain flag.
 
 ### mg\_mqtt\_sub()
 
 ```c
-void mg_mqtt_sub(struct mg_connection *, struct mg_str *topic);
+void mg_mqtt_sub(struct mg_connection *, struct mg_str *topic, int qos);
 ```
 
-Subscribe to topic `topic`.
+Subscribe to topic `topic` with given QoS.
 
 ### mg\_mqtt\_next\_sub()
 
 ```c
-int mg_mqtt_next_sub(struct mg_mqtt_message *msg, struct mg_str *topic,
-                     uint8_t *qos, int pos);
+size_t mg_mqtt_next_sub(struct mg_mqtt_message *msg, struct mg_str *topic, uint8_t *qos, size_t pos);
 ```
 
 Traverse list of subscribed topics. 
 Used to implement MQTT server when `MQTT_CMD_SUBSCRIBE` is received.
-Return next position. Initial position `pos` should be 4. Example:
+Return next position, or 0 when done. Initial position `pos` should be 4. Example:
 
 ```c
 if (ev == MG_EV_MQTT_CMD) {
   struct mg_mqtt_message *mm = (struct mg_mqtt_message *) ev_data;
   if (mm->cmd == MQTT_CMD_SUBSCRIBE) {
-    int pos = 4;
+    size_t pos = 4;
     uint8_t qos;
     struct mg_str topic;
     while ((pos = mg_mqtt_next_sub(mm, &topic, &qos, pos)) > 0) {
@@ -996,8 +1017,7 @@ if (ev == MG_EV_MQTT_CMD) {
 ### mg\_mqtt\_next\_unsub()
 
 ```c
-int mg_mqtt_next_unsub(struct mg_mqtt_message *msg, struct mg_str *topic,
-                       int pos);
+size_t mg_mqtt_next_unsub(struct mg_mqtt_message *msg, struct mg_str *topic, size_t pos);
 ```
 
 Same as `mg_mqtt_next_sub()`, but for unsubscribed topics. The difference
@@ -1020,6 +1040,11 @@ int mg_tls_init(struct mg_connection *c, struct mg_tls_opts *opts);
 ```
 
 Initialise TLS on a given connection.
+
+IMPORTANT: mbedTLS implementation uses `mg_random` as RNG. The `mg_random`
+is defined as weak, therefore it is possible to override Mongoose's `mg_random`
+with a custom implementation. Just create your own `mg_random` function:
+`void mg_random(void *buf, size_t len)`.
 
 
 ## Timers

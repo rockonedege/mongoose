@@ -2,6 +2,18 @@
 
 #if MG_ARCH == MG_ARCH_WIN32
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
+#ifndef _WINSOCK_DEPRECATED_NO_WARNINGS
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#endif
+
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -42,6 +54,7 @@ typedef enum { false = 0, true = 1 } bool;
 #define strdup(x) _strdup(x)
 #endif
 
+typedef unsigned suseconds_t;
 typedef int socklen_t;
 #define MG_DIRSEP '\\'
 #ifndef PATH_MAX
@@ -66,5 +79,16 @@ typedef int socklen_t;
 #endif
 
 #define MG_INT64_FMT "%I64d"
+
+// https://lgtm.com/rules/2154840805/ -gmtime, localtime, ctime and asctime
+static __inline struct tm *gmtime_r(time_t *t, struct tm *tm) {
+  (void) tm;
+  return gmtime(t);
+}
+
+static __inline struct tm *localtime_r(time_t *t, struct tm *tm) {
+  (void) tm;
+  return localtime(t);
+}
 
 #endif

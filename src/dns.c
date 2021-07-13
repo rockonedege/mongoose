@@ -70,11 +70,10 @@ size_t mg_dns_parse_name(const uint8_t *s, size_t n, size_t ofs, char *dst,
 
 size_t mg_dns_parse_rr(const uint8_t *buf, size_t len, size_t ofs,
                        bool is_question, struct mg_dns_rr *rr) {
-  const struct mg_dns_header *h = (struct mg_dns_header *) buf;
   const uint8_t *s = buf + ofs, *e = &buf[len];
 
   memset(rr, 0, sizeof(*rr));
-  if (len < sizeof(*h)) return 0;  // Too small, headers dont fit
+  if (len < sizeof(struct mg_dns_header)) return 0;  // Too small
   if (len > 512) return 0;         //  Too large, we don't expect that
   if (s >= e) return 0;            //  Overflow
 
@@ -82,15 +81,15 @@ size_t mg_dns_parse_rr(const uint8_t *buf, size_t len, size_t ofs,
     return 0;
   s += rr->nlen + 4;
   if (s > e) return 0;
-  rr->atype = ((uint16_t) s[-4] << 8) | s[-3];
-  rr->aclass = ((uint16_t) s[-2] << 8) | s[-1];
-  if (is_question) return rr->nlen + 4;
+  rr->atype = (uint16_t)(((uint16_t) s[-4] << 8) | s[-3]);
+  rr->aclass = (uint16_t)(((uint16_t) s[-2] << 8) | s[-1]);
+  if (is_question) return (size_t)(rr->nlen + 4);
 
   s += 6;
   if (s > e) return 0;
-  rr->alen = ((uint16_t) s[-2] << 8) | s[-1];
+  rr->alen = (uint16_t)(((uint16_t) s[-2] << 8) | s[-1]);
   if (s + rr->alen > e) return 0;
-  return rr->nlen + rr->alen + 10;
+  return (size_t)(rr->nlen + rr->alen + 10);
 }
 
 bool mg_dns_parse(const uint8_t *buf, size_t len, struct mg_dns_message *dm) {
@@ -242,14 +241,18 @@ static void mg_sendnsreq(struct mg_connection *c, struct mg_str *name, int ms,
   } else if ((d = (struct dns_data *) calloc(1, sizeof(*d))) == NULL) {
     mg_error(c, "resolve OOM");
   } else {
-    d->txnid = s_reqs ? s_reqs->txnid + 1 : 1;
+#if MG_ENABLE_LOG
+    char buf[100];
+#endif
+    d->txnid = s_reqs ? (uint16_t)(s_reqs->txnid + 1) : 1;
     d->next = s_reqs;
     s_reqs = d;
-    d->expire = mg_millis() + ms;
+    d->expire = mg_millis() + (unsigned long) ms;
     d->c = c;
     c->is_resolving = 1;
-    LOG(LL_VERBOSE_DEBUG, ("%lu resolving %.*s, txnid %hu", c->id,
-                           (int) name->len, name->ptr, d->txnid));
+    LOG(LL_VERBOSE_DEBUG,
+        ("%lu resolving %.*s @ %s, txnid %hu", c->id, (int) name->len,
+         name->ptr, mg_ntoa(&dnsc->c->peer, buf, sizeof(buf)), d->txnid));
     mg_dns_send(dnsc->c, name, d->txnid, ipv6);
   }
 }

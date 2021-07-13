@@ -1,8 +1,8 @@
+#include "mqtt.h"
 #include "arch.h"
 #include "base64.h"
 #include "event.h"
 #include "log.h"
-#include "mqtt.h"
 #include "private.h"
 #include "url.h"
 #include "util.h"
@@ -20,14 +20,14 @@ enum { MQTT_OK, MQTT_INCOMPLETE, MQTT_MALFORMED };
 void mg_mqtt_send_header(struct mg_connection *c, uint8_t cmd, uint8_t flags,
                          uint32_t len) {
   uint8_t buf[1 + sizeof(len)], *vlen = &buf[1];
-  buf[0] = (cmd << 4) | flags;
+  buf[0] = (uint8_t)((cmd << 4) | flags);
   do {
     *vlen = len % 0x80;
     len /= 0x80;
     if (len > 0) *vlen |= 0x80;
     vlen++;
   } while (len > 0 && vlen < &buf[sizeof(buf)]);
-  mg_send(c, buf, vlen - buf);
+  mg_send(c, buf, (size_t)(vlen - buf));
 }
 
 static void mg_send_u16(struct mg_connection *c, uint16_t value) {
@@ -37,7 +37,7 @@ static void mg_send_u16(struct mg_connection *c, uint16_t value) {
 static void mqtt_login(struct mg_connection *c, const char *url,
                        struct mg_mqtt_opts *opts) {
   uint32_t total_len = 7 + 1 + 2 + 2;
-  uint16_t flags = (opts->qos & 3) << 3;
+  uint16_t flags = (uint16_t)(((uint16_t) opts->qos & 3) << 3);
   struct mg_str user = mg_url_user(url);
   struct mg_str pass = mg_url_pass(url);
 
@@ -82,8 +82,8 @@ static void mqtt_login(struct mg_connection *c, const char *url,
 }
 
 void mg_mqtt_pub(struct mg_connection *c, struct mg_str *topic,
-                 struct mg_str *data) {
-  uint8_t flags = MQTT_QOS(1);
+                 struct mg_str *data, int qos, bool retain) {
+  uint8_t flags = (uint8_t)(((qos & 3) << 1) | (retain ? 1 : 0));
   uint32_t total_len = 2 + (uint32_t) topic->len + (uint32_t) data->len;
   LOG(LL_DEBUG, ("%lu [%.*s] -> [%.*s]", c->id, (int) topic->len,
                  (char *) topic->ptr, (int) data->len, (char *) data->ptr));
@@ -99,17 +99,17 @@ void mg_mqtt_pub(struct mg_connection *c, struct mg_str *topic,
   mg_send(c, data->ptr, data->len);
 }
 
-void mg_mqtt_sub(struct mg_connection *c, struct mg_str *topic) {
+void mg_mqtt_sub(struct mg_connection *c, struct mg_str *topic, int qos) {
   static uint16_t s_id;
-  uint8_t qos = 1;
+  uint8_t qos_ = qos & 3;
   uint32_t total_len = 2 + (uint32_t) topic->len + 2 + 1;
-  mg_mqtt_send_header(c, MQTT_CMD_SUBSCRIBE, (uint8_t) MQTT_QOS(qos),
+  mg_mqtt_send_header(c, MQTT_CMD_SUBSCRIBE, (uint8_t) MQTT_QOS(qos_),
                       total_len);
   if (++s_id == 0) ++s_id;
   mg_send_u16(c, mg_htons(s_id));
   mg_send_u16(c, mg_htons((uint16_t) topic->len));
   mg_send(c, topic->ptr, topic->len);
-  mg_send(c, &qos, sizeof(qos));
+  mg_send(c, &qos_, sizeof(qos_));
 }
 
 int mg_mqtt_parse(const uint8_t *buf, size_t len, struct mg_mqtt_message *m) {
@@ -119,21 +119,21 @@ int mg_mqtt_parse(const uint8_t *buf, size_t len, struct mg_mqtt_message *m) {
   memset(m, 0, sizeof(*m));
   m->dgram.ptr = (char *) buf;
   if (len < 2) return MQTT_INCOMPLETE;
-  m->cmd = buf[0] >> 4;
+  m->cmd = (uint8_t)(buf[0] >> 4);
   m->qos = (buf[0] >> 1) & 3;
 
   n = len_len = 0;
   p = (uint8_t *) buf + 1;
   while ((size_t)(p - buf) < len) {
     lc = *((uint8_t *) p++);
-    n += (lc & 0x7f) << 7 * len_len;
+    n += (uint32_t)((lc & 0x7f) << 7 * len_len);
     len_len++;
     if (!(lc & 0x80)) break;
     if (len_len >= 4) return MQTT_MALFORMED;
   }
   end = p + n;
   if (lc & 0x80 || end > buf + len) return MQTT_INCOMPLETE;
-  m->dgram.len = end - buf;
+  m->dgram.len = (size_t)(end - buf);
 
   switch (m->cmd) {
     case MQTT_CMD_CONNACK:
@@ -146,28 +146,28 @@ int mg_mqtt_parse(const uint8_t *buf, size_t len, struct mg_mqtt_message *m) {
     case MQTT_CMD_PUBCOMP:
     case MQTT_CMD_SUBACK:
       if (p + 2 > end) return MQTT_MALFORMED;
-      m->id = (p[0] << 8) | p[1];
+      m->id = (uint16_t)((((uint16_t) p[0]) << 8) | p[1]);
       break;
     case MQTT_CMD_SUBSCRIBE: {
       if (p + 2 > end) return MQTT_MALFORMED;
-      m->id = (p[0] << 8) | p[1];
+      m->id = (uint16_t)((((uint16_t) p[0]) << 8) | p[1]);
       p += 2;
       break;
     }
     case MQTT_CMD_PUBLISH: {
       if (p + 2 > end) return MQTT_MALFORMED;
-      m->topic.len = (p[0] << 8) | p[1];
+      m->topic.len = (uint16_t)((((uint16_t) p[0]) << 8) | p[1]);
       m->topic.ptr = (char *) p + 2;
       p += 2 + m->topic.len;
       if (p > end) return MQTT_MALFORMED;
       if (m->qos > 0) {
         if (p + 2 > end) return MQTT_MALFORMED;
-        m->id = (p[0] << 8) | p[1];
+        m->id = (uint16_t)((((uint16_t) p[0]) << 8) | p[1]);
         p += 2;
       }
       if (p > end) return MQTT_MALFORMED;
       m->data.ptr = (char *) p;
-      m->data.len = end - p;
+      m->data.len = (size_t)(end - p);
       break;
     }
     default:
@@ -176,28 +176,29 @@ int mg_mqtt_parse(const uint8_t *buf, size_t len, struct mg_mqtt_message *m) {
   return MQTT_OK;
 }
 
-static int mg_mqtt_next_topic(struct mg_mqtt_message *msg, struct mg_str *topic,
-                              uint8_t *qos, int pos) {
+static size_t mg_mqtt_next_topic(struct mg_mqtt_message *msg,
+                                 struct mg_str *topic, uint8_t *qos,
+                                 size_t pos) {
   unsigned char *buf = (unsigned char *) msg->dgram.ptr + pos;
-  int new_pos;
-  if ((size_t) pos >= msg->dgram.len) return -1;
+  size_t new_pos;
+  if (pos >= msg->dgram.len) return 0;
 
-  topic->len = buf[0] << 8 | buf[1];
+  topic->len = (size_t)(((unsigned) buf[0]) << 8 | buf[1]);
   topic->ptr = (char *) buf + 2;
   new_pos = pos + 2 + topic->len + (qos == NULL ? 0 : 1);
-  if ((size_t) new_pos > msg->dgram.len) return -1;
+  if ((size_t) new_pos > msg->dgram.len) return 0;
   if (qos != NULL) *qos = buf[2 + topic->len];
   return new_pos;
 }
 
-int mg_mqtt_next_sub(struct mg_mqtt_message *msg, struct mg_str *topic,
-                     uint8_t *qos, int pos) {
+size_t mg_mqtt_next_sub(struct mg_mqtt_message *msg, struct mg_str *topic,
+                        uint8_t *qos, size_t pos) {
   uint8_t tmp;
   return mg_mqtt_next_topic(msg, topic, qos == NULL ? &tmp : qos, pos);
 }
 
-int mg_mqtt_next_unsub(struct mg_mqtt_message *msg, struct mg_str *topic,
-                       int pos) {
+size_t mg_mqtt_next_unsub(struct mg_mqtt_message *msg, struct mg_str *topic,
+                          size_t pos) {
   return mg_mqtt_next_topic(msg, topic, NULL, pos);
 }
 

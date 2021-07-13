@@ -1,11 +1,11 @@
-#include "log.h"
 #include "net.h"
+#include "log.h"
 #include "util.h"
 
 int mg_vprintf(struct mg_connection *c, const char *fmt, va_list ap) {
   char mem[256], *buf = mem;
   int len = mg_vasprintf(&buf, sizeof(mem), fmt, ap);
-  len = mg_send(c, buf, len);
+  len = mg_send(c, buf, len > 0 ? (size_t) len : 0);
   if (buf != mem) free(buf);
   return len;
 }
@@ -56,7 +56,7 @@ static bool mg_aton4(struct mg_str str, struct mg_addr *addr) {
     if (str.ptr[i] >= '0' && str.ptr[i] <= '9') {
       int octet = data[num_dots] * 10 + (str.ptr[i] - '0');
       if (octet > 255) return false;
-      data[num_dots] = octet;
+      data[num_dots] = (uint8_t) octet;
     } else if (str.ptr[i] == '.') {
       if (num_dots >= 3 || i == 0 || str.ptr[i - 1] == '.') return false;
       num_dots++;
@@ -115,24 +115,25 @@ void mg_mgr_free(struct mg_mgr *mgr) {
   struct mg_connection *c;
   for (c = mgr->conns; c != NULL; c = c->next) c->is_closing = 1;
   mg_mgr_poll(mgr, 0);
-#if MG_ARCH == MG_ARCH_FREERTOS
+#if MG_ARCH == MG_ARCH_FREERTOS_TCP
   FreeRTOS_DeleteSocketSet(mgr->ss);
 #endif
   LOG(LL_INFO, ("All connections closed"));
 }
 
 void mg_mgr_init(struct mg_mgr *mgr) {
+  memset(mgr, 0, sizeof(*mgr));
 #if defined(_WIN32) && MG_ENABLE_WINSOCK
-  WSADATA data;
-  WSAStartup(MAKEWORD(2, 2), &data);
-#elif MG_ARCH == MG_ARCH_FREERTOS
+  // clang-format off
+  { WSADATA data; WSAStartup(MAKEWORD(2, 2), &data); }
+  // clang-format on
+#elif MG_ARCH == MG_ARCH_FREERTOS_TCP
   mgr->ss = FreeRTOS_CreateSocketSet();
 #elif defined(__unix) || defined(__unix__) || defined(__APPLE__)
   // Ignore SIGPIPE signal, so if client cancels the request, it
   // won't kill the whole process.
   signal(SIGPIPE, SIG_IGN);
 #endif
-  memset(mgr, 0, sizeof(*mgr));
   mgr->dnstimeout = 3000;
   mgr->dns4.url = "udp://8.8.8.8:53";
   mgr->dns6.url = "udp://[2001:4860:4860::8888]:53";

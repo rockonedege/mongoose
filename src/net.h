@@ -24,7 +24,7 @@ struct mg_mgr {
   int dnstimeout;               // DNS resolve timeout in milliseconds
   unsigned long nextid;         // Next connection ID
   void *userdata;               // Arbitrary user data pointer
-#if MG_ARCH == MG_ARCH_FREERTOS
+#if MG_ARCH == MG_ARCH_FREERTOS_TCP
   SocketSet_t ss;  // NOTE(lsm): referenced from socket struct
 #endif
 };
@@ -67,7 +67,7 @@ struct mg_connection *mg_listen(struct mg_mgr *, const char *url,
                                 mg_event_handler_t fn, void *fn_data);
 struct mg_connection *mg_connect(struct mg_mgr *, const char *url,
                                  mg_event_handler_t fn, void *fn_data);
-int mg_send(struct mg_connection *, const void *, size_t);
+bool mg_send(struct mg_connection *, const void *, size_t);
 int mg_printf(struct mg_connection *, const char *fmt, ...);
 int mg_vprintf(struct mg_connection *, const char *fmt, va_list ap);
 char *mg_straddr(struct mg_connection *, char *, size_t);
