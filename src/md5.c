@@ -1,30 +1,34 @@
-#include <string.h>
+#include "arch.h"
 #include "md5.h"
 
-#if MG_ENABLE_MD5
-#if !defined(BYTE_ORDER) && defined(__BYTE_ORDER)
-#define BYTE_ORDER __BYTE_ORDER
-#ifndef LITTLE_ENDIAN
-#define LITTLE_ENDIAN __LITTLE_ENDIAN
-#endif /* LITTLE_ENDIAN */
-#ifndef BIG_ENDIAN
-#define BIG_ENDIAN __LITTLE_ENDIAN
-#endif /* BIG_ENDIAN */
-#endif /* BYTE_ORDER */
+//  This code implements the MD5 message-digest algorithm.
+//  The algorithm is due to Ron Rivest.  This code was
+//  written by Colin Plumb in 1993, no copyright is claimed.
+//  This code is in the public domain; do with it what you wish.
+//
+//  Equivalent code is available from RSA Data Security, Inc.
+//  This code has been tested against that, and is equivalent,
+//  except that you don't need to include two pages of legalese
+//  with every copy.
+//
+//  To compute the message digest of a chunk of bytes, declare an
+//  MD5Context structure, pass it to MD5Init, call MD5Update as
+//  needed on buffers full of bytes, and then call MD5Final, which
+//  will fill a supplied 16-byte array with the digest.
+
+#if defined(MG_ENABLE_MD5) && MG_ENABLE_MD5
 
 static void mg_byte_reverse(unsigned char *buf, unsigned longs) {
-/* Forrest: MD5 expect LITTLE_ENDIAN, swap if BIG_ENDIAN */
-#if BYTE_ORDER == BIG_ENDIAN
-  do {
-    uint32_t t = (uint32_t)((unsigned) buf[3] << 8 | buf[2]) << 16 |
-                 ((unsigned) buf[1] << 8 | buf[0]);
-    *(uint32_t *) buf = t;
-    buf += 4;
-  } while (--longs);
-#else
-  (void) buf;
-  (void) longs;
-#endif
+  if (MG_BIG_ENDIAN) {
+    do {
+      uint32_t t = (uint32_t) ((unsigned) buf[3] << 8 | buf[2]) << 16 |
+                   ((unsigned) buf[1] << 8 | buf[0]);
+      *(uint32_t *) buf = t;
+      buf += 4;
+    } while (--longs);
+  } else {
+    (void) buf, (void) longs;  // Little endian. Do nothing
+  }
 }
 
 #define F1(x, y, z) (z ^ (x & (y ^ z)))

@@ -1,83 +1,62 @@
 #pragma once
 
-#define MG_ARCH_CUSTOM 0
-#define MG_ARCH_UNIX 1
-#define MG_ARCH_WIN32 2
-#define MG_ARCH_ESP32 3
-#define MG_ARCH_ESP8266 4
-#define MG_ARCH_CC3100 5
-#define MG_ARCH_CC3200 6
-#define MG_ARCH_CC3220 7
-#define MG_ARCH_MSP432 8
-#define MG_ARCH_TM4C129 9
-#define MG_ARCH_MBED 10
-#define MG_ARCH_WINCE 11
-#define MG_ARCH_NXP_LPC 12
-#define MG_ARCH_NXP_KINETIS 13
-#define MG_ARCH_NRF51 14
-#define MG_ARCH_NRF52 15
-#define MG_ARCH_PIC32 16
-#define MG_ARCH_RS14100 17
-#define MG_ARCH_STM32 18
-#define MG_ARCH_FREERTOS 19
+#define MG_ARCH_CUSTOM 0        // User creates its own mongoose_config.h
+#define MG_ARCH_UNIX 1          // Linux, BSD, Mac, ...
+#define MG_ARCH_WIN32 2         // Windows
+#define MG_ARCH_ESP32 3         // ESP32
+
+#define MG_ARCH_FREERTOS 5      // FreeRTOS <-- DEPRECATED !!!
+
+#define MG_ARCH_THREADX 6       // Eclipse ThreadX (former MS Azure RTOS)
+#define MG_ARCH_ZEPHYR 7        // Zephyr RTOS
+#define MG_ARCH_ARMGCC 8        // Plain ARM GCC
+#define MG_ARCH_CMSIS_RTOS1 9   // CMSIS-RTOS API v1 (Keil RTX)
+#define MG_ARCH_TIRTOS 10       // Texas Semi TI-RTOS
+#define MG_ARCH_PICOSDK 11      // Raspberry Pi Pico-SDK (RP2040, RP2350)
+#define MG_ARCH_ARMCC 12        // Keil MDK-Core with Configuration Wizard
+#define MG_ARCH_CMSIS_RTOS2 13  // CMSIS-RTOS API v2 (Keil RTX5, FreeRTOS)
+#define MG_ARCH_RTTHREAD 14     // RT-Thread RTOS
+#define MG_ARCH_ARMCGT 15       // Texas Semi ARM-CGT
+#define MG_ARCH_CUBE 16	        // STM32Cube environment
+#define MG_ARCH_MCUXPRESSO 17   // MCUXpresso environment
+
+#define MG_ARCH_NEWLIB MG_ARCH_ARMGCC  // Alias, deprecate in 2025
 
 #if !defined(MG_ARCH)
-#if defined(TARGET_IS_MSP432P4XX) || defined(__MSP432P401R__)
-#define MG_ARCH MG_ARCH_MSP432
-#elif defined(cc3200) || defined(TARGET_IS_CC3200)
-#define MG_ARCH MG_ARCH_CC3200
-#elif defined(cc3220) || defined(TARGET_IS_CC3220)
-#define MG_ARCH MG_ARCH_CC3220
-#elif defined(__unix__) || defined(__APPLE__)
+#if defined(__unix__) || defined(__APPLE__)
 #define MG_ARCH MG_ARCH_UNIX
-#elif defined(WINCE)
-#define MG_ARCH MG_ARCH_WINCE
 #elif defined(_WIN32)
 #define MG_ARCH MG_ARCH_WIN32
-#elif defined(__MBED__)
-#define MG_ARCH MG_ARCH_MBED
-#elif defined(__USE_LPCOPEN)
-#define MG_ARCH MG_ARCH_NXP_LPC
-#elif defined(FRDM_K64F) || defined(FREEDOM)
-#define MG_ARCH MG_ARCH_NXP_KINETIS
-#elif defined(PIC32)
-#define MG_ARCH MG_ARCH_PIC32
-#elif defined(ICACHE_FLASH) || defined(ICACHE_RAM_ATTR)
-#define MG_ARCH MG_ARCH_ESP8266
-#elif defined(ESP_PLATFORM)
-#define MG_ARCH MG_ARCH_ESP32
-#elif defined(TARGET_IS_TM4C129_RA0) || defined(TARGET_IS_TM4C129_RA1) || \
-    defined(TARGET_IS_TM4C129_RA2)
-#define MG_ARCH MG_ARCH_TM4C129
-#elif defined(RS14100)
-#define MG_ARCH MG_ARCH_RS14100
-#elif defined(STM32)
-#define MG_ARCH MG_ARCH_STM32
-#endif
-
-#if !defined(MG_ARCH)
-#error "MG_ARCH is not specified and we couldn't guess it."
 #endif
 #endif  // !defined(MG_ARCH)
 
-#define WIN32_LEAN_AND_MEAN
-#define _CRT_SECURE_NO_WARNINGS
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-
-#if !defined(PRINTF_LIKE)
-#if defined(__GNUC__) || defined(__clang__) || defined(__TI_COMPILER_VERSION__)
-#define PRINTF_LIKE(f, a) __attribute__((format(printf, f, a)))
-#else
-#define PRINTF_LIKE(f, a)
-#endif
+#if !defined(MG_ARCH) || (MG_ARCH == MG_ARCH_CUSTOM)
+#include "mongoose_config.h"  // keep this include
 #endif
 
-#if MG_ARCH == MG_ARCH_CUSTOM
-#include <mongoose_custom.h>
+#if !defined(MG_ARCH)
+#error "MG_ARCH is not specified and we couldn't guess it. Define MG_ARCH=... in mongoose_config.h"
+#elif MG_ARCH == MG_ARCH_FREERTOS
+#error "MG_ARCH_FREERTOS has been deprecated, set MG_ARCH=your_build_environment and MG_ENABLE_FREERTOS=1 instead"
+#undef MG_ARCH	// avoid errors piling up, provide a clean environment so the error above is seen
+#define MG_ARCH MG_ARCH_ARMGCC
+#define MG_ENABLE_FREERTOS 1
 #endif
 
+// http://esr.ibiblio.org/?p=5095
+#define MG_BIG_ENDIAN (*(uint16_t *) "\0\xff" < 0x100)
+
+#include "arch_armgcc.h"
+#include "arch_cube.h"
 #include "arch_esp32.h"
-#include "arch_esp8266.h"
-#include "arch_freertos.h"
+#include "arch_rtx.h"
+#include "arch_threadx.h"
 #include "arch_unix.h"
 #include "arch_win32.h"
+#include "arch_zephyr.h"
+
+#include "os_freertos.h"
+
+#include "net_ft.h"
+#include "net_lwip.h"
+#include "net_rl.h"

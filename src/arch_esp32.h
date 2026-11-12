@@ -17,10 +17,21 @@
 #include <sys/types.h>
 #include <time.h>
 
-#define MG_DIRSEP '/'
-#define MG_INT64_FMT "%lld"
-#ifndef MG_PATH_MAX
+#include <esp_ota_ops.h>   // Use angle brackets to avoid
+#include <esp_timer.h>     // amalgamation ditching them
+#include <esp_system.h>
+#include <esp_mac.h>
+#include <esp_idf_version.h>
+#if MG_ENABLE_HEALTH
+#include <esp_memory_utils.h>
+#include <esp_core_dump.h>
+#include <esp_partition.h>
+#endif
+
 #define MG_PATH_MAX 128
+
+#ifndef MG_ENABLE_POSIX_FS
+#define MG_ENABLE_POSIX_FS 1
 #endif
 
 #endif

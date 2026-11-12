@@ -1,337 +1,278 @@
-#include "config.h"
 #include "util.h"
+#include "log.h"
+#include "net.h"
 
-#if MG_ENABLE_FS
-int mg_stat(const char *path, mg_stat_t *st) {
-#ifdef _WIN32
-  wchar_t tmp[MG_PATH_MAX];
-  MultiByteToWideChar(CP_UTF8, 0, path, -1, tmp, sizeof(tmp) / sizeof(tmp[0]));
-  return _wstati64(tmp, st);
+// Not using memset for zeroing memory, cause it can be dropped by compiler
+// See https://github.com/cesanta/mongoose/pull/1265
+void mg_bzero(volatile unsigned char *buf, size_t len) {
+  if (buf != NULL) {
+    while (len--) *buf++ = 0;
+  }
+}
+
+uint64_t mg_timegm(unsigned int year, unsigned int month, unsigned int day,
+                   unsigned int hour, unsigned int min, unsigned int sec) {
+  static const uint16_t dm[12] = {0,   31,  59,  90,  120, 151,
+                                  181, 212, 243, 273, 304, 334};
+  const uint64_t day_secs = 86400;
+  const uint64_t year_secs = 31536000;
+  unsigned int y, ly;
+  if (year < 1970 || month == 0 || month > 12) return 0;
+  y = year - 1900;
+  ly = month > 2 ? y + 1 : y;
+  return (uint64_t) sec + 60 * min + 3600 * hour +
+         day_secs * (dm[month - 1] + day - 1) + year_secs * (y - 70) +
+         day_secs * ((ly - 69) / 4) - day_secs * ((ly - 1) / 100) +
+         day_secs * ((ly + 299) / 400);
+}
+
+bool mg_memeq(const void *a, const void *b, size_t n) {
+  const uint8_t *p = (const uint8_t *) a, *q = (const uint8_t *) b;
+  uint8_t r = 0;
+  size_t i;
+  for (i = 0; i < n; i++) r = (uint8_t) (r | (uint8_t) (p[i] ^ q[i]));
+  return r == 0;
+}
+
+#if MG_ENABLE_CUSTOM_RANDOM
 #else
-  return stat(path, st);
-#endif
-}
-
-FILE *mg_fopen(const char *path, const char *mode) {
-#ifdef _WIN32
-  wchar_t b1[MG_PATH_MAX], b2[10];
-  MultiByteToWideChar(CP_UTF8, 0, path, -1, b1, sizeof(b1) / sizeof(b1[0]));
-  MultiByteToWideChar(CP_UTF8, 0, mode, -1, b2, sizeof(b2) / sizeof(b2[0]));
-  return _wfopen(b1, b2);
+bool mg_random(void *buf, size_t len) {
+  bool success = false;
+  unsigned char *p = (unsigned char *) buf;
+#if MG_ARCH == MG_ARCH_ESP32
+  while (len--) *p++ = (unsigned char) (esp_random() & 255);
+  success = true;
+#elif MG_ARCH == MG_ARCH_CUBE && defined(HAL_RNG_MODULE_ENABLED)
+  extern RNG_HandleTypeDef hrng;
+  success = true;
+  for (size_t n = 0; n < len; n += sizeof(uint32_t)) {
+    uint32_t r = 0;
+    if (HAL_RNG_GenerateRandomNumber(&hrng, &r) != HAL_OK) success = false;
+    memcpy((char *) buf + n, &r, n + sizeof(r) > len ? len - n : sizeof(r));
+  }
+#elif MG_ARCH == MG_ARCH_PICOSDK
+  while (len--) *p++ = (unsigned char) (get_rand_32() & 255);
+  success = true;
+#elif MG_ARCH == MG_ARCH_ZEPHYR
+#if MG_TLS == MG_TLS_BUILTIN ||                                    \
+    (MG_TLS == MG_TLS_MBED && (!defined(MBEDTLS_VERSION_NUMBER) || \
+                               MBEDTLS_VERSION_NUMBER < 0x04000000))
+  return (sys_csrand_get(buf, len) == 0);  // do not fallback on reseed error
 #else
-  return fopen(path, mode);
+  sys_rand_get(buf, len);
+  success = true;
 #endif
-}
-
-int64_t mg_file_size(const char *path) {
-#if MG_ARCH == MG_ARCH_FREERTOS
-  struct FF_STAT st;
-  return ff_stat(path, &st) == 0 ? st.st_size : 0;
+#elif MG_ARCH == MG_ARCH_WIN32
+#if defined(_MSC_VER) && _MSC_VER < 1700
+  static bool initialised = false;
+  static HCRYPTPROV hProv;
+  // CryptGenRandom() implementation earlier than 2008 is weak, see
+  // https://en.wikipedia.org/wiki/CryptGenRandom
+  if (!initialised) {
+    initialised = CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL,
+                                      CRYPT_VERIFYCONTEXT);
+  }
+  if (initialised) success = CryptGenRandom(hProv, len, p);
 #else
-  mg_stat_t st;
-  return mg_stat(path, &st) == 0 ? st.st_size : 0;
-#endif
-}
-
-char *mg_file_read(const char *path, size_t *sizep) {
-  FILE *fp;
-  char *data = NULL;
-  size_t size = (size_t) mg_file_size(path);
-  if ((fp = mg_fopen(path, "rb")) != NULL) {
-    data = (char *) malloc(size + 1);
-    if (data != NULL) {
-      if (fread(data, 1, size, fp) != size) {
-        free(data);
-        data = NULL;
-      } else {
-        data[size] = '\0';
-        if (sizep != NULL) *sizep = size;
-      }
-    }
-    fclose(fp);
-  }
-  return data;
-}
-
-bool mg_file_write(const char *path, const void *buf, size_t len) {
-  bool result = false;
-  FILE *fp;
-  char tmp[MG_PATH_MAX];
-  snprintf(tmp, sizeof(tmp), "%s.%d", path, rand());
-  fp = mg_fopen(tmp, "wb");
-  if (fp != NULL) {
-    result = fwrite(buf, 1, len, fp) == len;
-    fclose(fp);
-    if (result) {
-      remove(path);
-      rename(tmp, path);
-    } else {
-      remove(tmp);
-    }
-  }
-  return result;
-}
-
-bool mg_file_printf(const char *path, const char *fmt, ...) {
-  char tmp[256], *buf = tmp;
-  bool result;
-  size_t len;
-  va_list ap;
-  va_start(ap, fmt);
-  len = mg_vasprintf(&buf, sizeof(tmp), fmt, ap);
-  va_end(ap);
-  result = mg_file_write(path, buf, len);
-  if (buf != tmp) free(buf);
-  return result;
-}
-#endif
-
-void mg_random(void *buf, size_t len) {
-  bool done = false;
-#if MG_ENABLE_FS
-  FILE *fp = mg_fopen("/dev/urandom", "rb");
-  if (fp != NULL) {
-    if (fread(buf, 1, len, fp) == len) done = true;
-    fclose(fp);
-  }
-#endif
-  if (!done) {
-    // Fallback to a pseudo random gen
-    size_t i;
-    for (i = 0; i < len; i++) ((unsigned char *) buf)[i] = rand() % 0xff;
-  }
-}
-
-bool mg_globmatch(const char *s1, int n1, const char *s2, int n2) {
-  int i = 0, j = 0, ni = 0, nj = 0;
-  while (i < n1 || j < n2) {
-    if (i < n1 && j < n2 && (s1[i] == '?' || s2[j] == s1[i])) {
-      i++, j++;
-    } else if (i < n1 && (s1[i] == '*' || s1[i] == '#')) {
-      ni = i, nj = j + 1, i++;
-    } else if (nj > 0 && nj <= n2 && (s1[i - 1] == '#' || s2[j] != '/')) {
-      i = ni, j = nj;
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
-
-static int mg_nextcommaentry(const char *s, int slen, int ofs, int *koff,
-                             int *klen, int *voff, int *vlen) {
-  int kvlen, kl;
-  for (kvlen = 0; ofs + kvlen < slen && s[ofs + kvlen] != ',';) kvlen++;
-  for (kl = 0; kl < kvlen && s[ofs + kl] != '=';) kl++;
-  if (koff != NULL) *koff = ofs;
-  if (klen != NULL) *klen = kl;
-  if (voff != NULL) *voff = kl < kvlen ? ofs + kl + 1 : 0;
-  if (vlen != NULL) *vlen = kl < kvlen ? kvlen - kl - 1 : 0;
-  return ofs >= slen ? slen : ofs + kvlen + 1;
-}
-
-bool mg_next_comma_entry(struct mg_str *s, struct mg_str *k, struct mg_str *v) {
-  int koff, klen, voff, vlen;
-  int off = mg_nextcommaentry(s->ptr, s->len, 0, &koff, &klen, &voff, &vlen);
-  if (k != NULL) *k = mg_str_n(s->ptr + koff, klen);
-  if (v != NULL) *v = mg_str_n(s->ptr + voff, vlen);
-  *s = mg_str_n(s->ptr + off, s->len - off);
-  return off > 0;
-}
-
-uint32_t mg_ntohl(uint32_t net) {
-  uint8_t data[4] = {0, 0, 0, 0};
-  memcpy(&data, &net, sizeof(data));
-  return ((uint32_t) data[3] << 0) | ((uint32_t) data[2] << 8) |
-         ((uint32_t) data[1] << 16) | ((uint32_t) data[0] << 24);
-}
-
-uint16_t mg_ntohs(uint16_t net) {
-  uint8_t data[2] = {0, 0};
-  memcpy(&data, &net, sizeof(data));
-  return ((uint16_t) data[1] << 0) | ((uint32_t) data[0] << 8);
-}
-
-char *mg_hexdump(const void *buf, size_t len) {
-  const unsigned char *p = (const unsigned char *) buf;
-  size_t i, idx, n = 0, ofs = 0, dlen = len * 5 + 100;
-  char ascii[17] = "", *dst = (char *) malloc(dlen);
-  if (dst == NULL) return dst;
+  size_t i;
   for (i = 0; i < len; i++) {
-    idx = i % 16;
-    if (idx == 0) {
-      if (i > 0 && dlen > n) n += snprintf(dst + n, dlen - n, "  %s\n", ascii);
-      if (dlen > n) n += snprintf(dst + n, dlen - n, "%04x ", (int) (i + ofs));
-    }
-    if (dlen < n) break;
-    n += snprintf(dst + n, dlen - n, " %02x", p[i]);
-    ascii[idx] = p[i] < 0x20 || p[i] > 0x7e ? '.' : p[i];
-    ascii[idx + 1] = '\0';
-  }
-  while (i++ % 16) {
-    if (n < dlen) n += snprintf(dst + n, dlen - n, "%s", "   ");
-  }
-  if (n < dlen) n += snprintf(dst + n, dlen - n, "  %s\n", ascii);
-  if (n > dlen - 1) n = dlen - 1;
-  dst[n] = '\0';
-  return dst;
-}
-
-char *mg_hex(const void *buf, int len, char *to) {
-  const unsigned char *p = (const unsigned char *) buf;
-  static const char *hex = "0123456789abcdef";
-  int i = 0;
-  for (; len--; p++) {
-    to[i++] = hex[p[0] >> 4];
-    to[i++] = hex[p[0] & 0x0f];
-  }
-  to[i] = '\0';
-  return to;
-}
-
-unsigned long mg_unhexn(const char *s, int len) {
-  unsigned long i = 0, v = 0;
-  for (i = 0; i < (unsigned long) len; i++) {
-    int c = s[i];
-    if (i > 0) v <<= 4;
-    v |= (c >= '0' && c <= '9') ? c - '0'
-                                : (c >= 'A' && c <= 'F') ? c - '7' : c - 'W';
-  }
-  return v;
-}
-
-void mg_unhex(const char *buf, int len, unsigned char *to) {
-  int i;
-  for (i = 0; i < len; i += 2) {
-    to[i >> 1] = (unsigned char) mg_unhexn(&buf[i], 2);
-  }
-}
-
-int mg_vasprintf(char **buf, size_t size, const char *fmt, va_list ap) {
-  va_list ap_copy;
-  int len;
-
-  va_copy(ap_copy, ap);
-  len = vsnprintf(*buf, size, fmt, ap_copy);
-  va_end(ap_copy);
-
-  if (len < 0) {
-    // eCos and Windows are not standard-compliant and return -1 when
-    // the buffer is too small. Keep allocating larger buffers until we
-    // succeed or out of memory.
-    // LCOV_EXCL_START
-    *buf = NULL;
-    while (len < 0) {
-      free(*buf);
-      if (size == 0) size = 5;
-      size *= 2;
-      if ((*buf = (char *) malloc(size)) == NULL) {
-        len = -1;
-        break;
-      }
-      va_copy(ap_copy, ap);
-      len = vsnprintf(*buf, size - 1, fmt, ap_copy);
-      va_end(ap_copy);
-    }
-    // Microsoft version of vsnprintf() is not always null-terminated, so put
-    // the terminator manually
-    if (*buf != NULL) (*buf)[len] = 0;
-    // LCOV_EXCL_STOP
-  } else if (len >= (int) size) {
-    /// Standard-compliant code path. Allocate a buffer that is large enough
-    if ((*buf = (char *) malloc(len + 1)) == NULL) {
-      len = -1;  // LCOV_EXCL_LINE
-    } else {     // LCOV_EXCL_LINE
-      va_copy(ap_copy, ap);
-      len = vsnprintf(*buf, len + 1, fmt, ap_copy);
-      va_end(ap_copy);
+    unsigned int rand_v;
+    if (rand_s(&rand_v) == 0) {
+      p[i] = (unsigned char) (rand_v & 255);
+    } else {
+      break;
     }
   }
+  success = (i == len);
+#endif
 
-  return len;
-}
-
-int mg_asprintf(char **buf, size_t size, const char *fmt, ...) {
-  int ret;
-  va_list ap;
-  va_start(ap, fmt);
-  ret = mg_vasprintf(buf, size, fmt, ap);
-  va_end(ap);
-  return ret;
-}
-
-int64_t mg_to64(struct mg_str str) {
-  int64_t result = 0, neg = 1, max = 922337203685477570 /* INT64_MAX/10-10 */;
-  size_t i = 0;
-  while (i < str.len && (str.ptr[i] == ' ' || str.ptr[i] == '\t')) i++;
-  if (i < str.len && str.ptr[i] == '-') neg = -1, i++;
-  while (i < str.len && str.ptr[i] >= '0' && str.ptr[i] <= '9') {
-    if (result > max) return 0;
-    result *= 10;
-    result += (str.ptr[i] - '0');
-    i++;
+#elif MG_ARCH == MG_ARCH_UNIX
+  FILE *fp = fopen("/dev/urandom", "rb");
+  if (fp != NULL) {
+    if (fread(buf, 1, len, fp) == len) success = true;
+    fclose(fp);
   }
-  return result * neg;
+#endif
+  // If everything above did not work, fallback to a pseudo random generator
+  if (success == false) {
+    MG_ERROR(("Weak RNG: using rand()"));
+    while (len--) *p++ = (unsigned char) (rand() & 255);
+  }
+  return success;
+}
+#endif
+
+char *mg_random_str(char *buf, size_t len) {
+  size_t i;
+  mg_random(buf, len);
+  for (i = 0; i < len; i++) {
+    uint8_t c = ((uint8_t *) buf)[i] % 62U;
+    buf[i] = i == len - 1 ? (char) '\0'            // 0-terminate last byte
+             : c < 26     ? (char) ('a' + c)       // lowercase
+             : c < 52     ? (char) ('A' + c - 26)  // uppercase
+                          : (char) ('0' + c - 52);     // numeric
+  }
+  return buf;
 }
 
 uint32_t mg_crc32(uint32_t crc, const char *buf, size_t len) {
-  int i;
+  static const uint32_t crclut[16] = {
+      // table for polynomial 0xEDB88320 (reflected)
+      0x00000000, 0x1DB71064, 0x3B6E20C8, 0x26D930AC, 0x76DC4190, 0x6B6B51F4,
+      0x4DB26158, 0x5005713C, 0xEDB88320, 0xF00F9344, 0xD6D6A3E8, 0xCB61B38C,
+      0x9B64C2B0, 0x86D3D2D4, 0xA00AE278, 0xBDBDF21C};
   crc = ~crc;
   while (len--) {
-    crc ^= *(unsigned char *) buf++;
-    for (i = 0; i < 8; i++) crc = crc & 1 ? (crc >> 1) ^ 0xedb88320 : crc >> 1;
+    uint8_t b = *(uint8_t *) buf++;
+    crc = crclut[(crc ^ b) & 0x0F] ^ (crc >> 4);
+    crc = crclut[(crc ^ (b >> 4)) & 0x0F] ^ (crc >> 4);
   }
   return ~crc;
 }
 
-double mg_time(void) {
-#if MG_ARCH == MG_ARCH_WIN32
-  SYSTEMTIME sysnow;
-  FILETIME ftime;
-  GetLocalTime(&sysnow);
-  SystemTimeToFileTime(&sysnow, &ftime);
-  /*
-   * 1. VC 6.0 doesn't support conversion uint64 -> double, so, using int64
-   * This should not cause a problems in this (21th) century
-   * 2. Windows FILETIME is a number of 100-nanosecond intervals since January
-   * 1, 1601 while time_t is a number of _seconds_ since January 1, 1970 UTC,
-   * thus, we need to convert to seconds and adjust amount (subtract 11644473600
-   * seconds)
-   */
-  return (double) (((int64_t) ftime.dwLowDateTime +
-                    ((int64_t) ftime.dwHighDateTime << 32)) /
-                   10000000.0) -
-         11644473600;
-#else
-  struct timeval tv;
-  if (gettimeofday(&tv, NULL /* tz */) != 0) return 0;
-  return (double) tv.tv_sec + (((double) tv.tv_usec) / 1000000.0);
-#endif /* _WIN32 */
+uint16_t mg_crc16(uint16_t crc, const char *buf, size_t len) {
+  static const uint16_t crclut[16] = {
+      // table for polynomial 0x8408 (reflected)
+      0x0000, 0x1081, 0x2102, 0x3183, 0x4204, 0x5285, 0x6306, 0x7387,
+      0x8408, 0x9489, 0xA50A, 0xB58B, 0xC60C, 0xD68D, 0xE70E, 0xF78F};
+  unsigned int c = (unsigned int) ~crc & 0xffff;
+  while (len--) {
+    uint8_t b = *(uint8_t *) buf++;
+    c = crclut[(c ^ b) & 0x0F] ^ (c >> 4);
+    c = crclut[(c ^ (b >> 4)) & 0x0F] ^ (c >> 4);
+  }
+  return (uint16_t) ~c;
 }
 
-void mg_usleep(unsigned long usecs) {
-#if MG_ARCH == MG_ARCH_WIN32
-  Sleep(usecs / 1000);
-#elif MG_ARCH == MG_ARCH_ESP8266
-  ets_delay_us(usecs);
-#else
-  usleep(usecs);
-#endif
+// Parse "IP" or "IP/BITS" into net and mask. The whole spec must be valid
+static bool parse_net(struct mg_str spec, uint32_t *net, uint32_t *mask) {
+  struct mg_str caps[3], ip = spec, bits = mg_str("32");
+  struct mg_addr addr;
+  uint8_t n = 0;
+  if (mg_match(spec, mg_str("*/*"), caps)) ip = caps[0], bits = caps[1];
+  // ip.len == 0 check: mg_aton() parses an empty string as 0.0.0.0
+  if (ip.len == 0 || !mg_aton(ip, &addr) || addr.is_ip6 ||
+      !mg_str_to_num(bits, 10, &n, sizeof(n)) || n > 32) {
+    return false;
+  }
+  memcpy(net, addr.addr.ip, sizeof(*net));
+  *net = mg_ntohl(*net);
+  *mask = n ? (uint32_t) (0xffffffffU << (32 - n)) : (uint32_t) 0;
+  return true;
 }
 
-unsigned long mg_millis(void) {
-#if MG_ARCH == MG_ARCH_WIN32
+int mg_check_ip_acl(struct mg_str acl, struct mg_addr *remote_ip) {
+  struct mg_str entry;
+  int allowed = acl.len == 0 ? '+' : '-';  // If any ACL is set, deny by default
+  uint32_t remote_ip4;
+  if (remote_ip->is_ip6) {
+    return -1;  // TODO(): handle IPv6 ACL and addresses
+  } else {      // IPv4
+    memcpy((void *) &remote_ip4, remote_ip->addr.ip, sizeof(remote_ip4));
+    while (mg_span(acl, &entry, &acl, ',')) {
+      uint32_t net, mask;
+      if (entry.buf[0] != '+' && entry.buf[0] != '-') return -1;
+      if (!parse_net(mg_str_n(entry.buf + 1, entry.len - 1), &net, &mask)) {
+        return -2;
+      }
+      if ((mg_ntohl(remote_ip4) & mask) == net) allowed = entry.buf[0];
+    }
+  }
+  return allowed == '+';
+}
+
+bool mg_path_is_sane(const struct mg_str path) {
+  const char *s = path.buf;
+  size_t n = path.len;
+  if (n == 0 || path.buf[0] == '\0') return true;
+  if (s[0] == '~') return false;  // Starts with ~
+  if (s[0] == '.' && n > 1 && s[1] == '.')
+    return false;  // Starts with ..
+  for (; n > 0 && s[0] != '\0'; s++, n--) {
+    if ((s[0] == '/' || s[0] == '\\') && n >= 2 && s[1] == '.' && n > 2 &&
+        s[2] == '.')
+      return false;  // Subdir starts with ..
+  }
+  if (n > 0) return false;  // embedded nul (terminator not counted in len)
+  return true;
+}
+
+#if MG_ENABLE_CUSTOM_MILLIS
+#else
+uint64_t mg_millis(void) {
+#if MG_ARCH == MG_ARCH_ESP32 || MG_ENABLE_FREERTOS
+  return xTaskGetTickCount() * portTICK_PERIOD_MS;
+#elif MG_ARCH == MG_ARCH_THREADX
+  return tx_time_get() * (1000 /* MS per SEC */ / TX_TIMER_TICKS_PER_SECOND);
+#elif MG_ARCH == MG_ARCH_TIRTOS
+  return (uint64_t) Clock_getTicks();
+#elif MG_ARCH == MG_ARCH_ZEPHYR
+  return (uint64_t) k_uptime_get();
+#elif MG_ARCH == MG_ARCH_CMSIS_RTOS1
+  return (uint64_t) rt_time_get();
+#elif MG_ARCH == MG_ARCH_CMSIS_RTOS2
+  return (uint64_t) ((osKernelGetTickCount() * 1000) / osKernelGetTickFreq());
+#elif MG_ARCH == MG_ARCH_RTTHREAD
+  return (uint64_t) ((rt_tick_get() * 1000) / RT_TICK_PER_SECOND);
+#elif MG_ARCH == MG_ARCH_WIN32
   return GetTickCount();
-#elif MG_ARCH == MG_ARCH_ESP32
-  return esp_timer_get_time() / 1000;
-#elif MG_ARCH == MG_ARCH_ESP8266
-  // return system_get_time() / 1000;
-  return xTaskGetTickCount() * portTICK_PERIOD_MS;
-#elif MG_ARCH == MG_ARCH_FREERTOS
-  return xTaskGetTickCount() * portTICK_PERIOD_MS;
+#elif MG_ARCH == MG_ARCH_PICOSDK
+  return time_us_64() / 1000;
+#elif MG_ARCH == MG_ARCH_CUBE
+  return (uint64_t) HAL_GetTick();
+#elif MG_ARCH == MG_ARCH_UNIX && defined(__APPLE__)
+  // Apple CLOCK_MONOTONIC_RAW is equivalent to CLOCK_BOOTTIME on linux
+  // Apple CLOCK_UPTIME_RAW is equivalent to CLOCK_MONOTONIC_RAW on linux
+  return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000;
+#elif MG_ARCH == MG_ARCH_UNIX
+  struct timespec ts = {0, 0};
+  // See #1615 - prefer monotonic clock
+#if defined(CLOCK_MONOTONIC_RAW)
+  // Raw hardware-based time that is not subject to NTP adjustment
+  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+#elif defined(CLOCK_MONOTONIC)
+  // Affected by the incremental adjustments performed by adjtime and NTP
+  clock_gettime(CLOCK_MONOTONIC, &ts);
 #else
-  struct timespec ts;
+  // Affected by discontinuous jumps in the system time and by the incremental
+  // adjustments performed by adjtime and NTP
   clock_gettime(CLOCK_REALTIME, &ts);
-  return (unsigned long) ((uint64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+#endif
+  return ((uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000);
+#elif defined(ARDUINO)
+  return (uint64_t) millis();
+#else
+  return (uint64_t) (time(NULL) * 1000);
 #endif
 }
+#endif
+
+// network format equates big endian order
+uint16_t mg_ntohs(uint16_t net) {
+  return MG_LOAD_BE16(&net);
+}
+
+uint32_t mg_ntohl(uint32_t net) {
+  return MG_LOAD_BE32(&net);
+}
+
+uint64_t mg_ntohll(uint64_t net) {
+  return MG_LOAD_BE64(&net);
+}
+
+void mg_delayms(unsigned int ms) {
+  uint64_t now, to = mg_millis() + ms + 1;
+  while ((now = mg_millis()) < to)
+    if (now + ms + 1 < to) to = now + ms + 1;
+}
+
+#if MG_ENABLE_CUSTOM_CALLOC
+#else
+void *mg_calloc(size_t count, size_t size) {
+  return calloc(count, size);
+}
+
+void mg_free(void *ptr) {
+  free(ptr);
+}
+#endif
